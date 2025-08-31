@@ -19,6 +19,9 @@ export class TodoistAIChat {
   private availableTools: MCPTool[] = [];
   private config: AppConfig;
   private isProcessingRequest = false;
+  // Add conversation context storage
+  private conversationHistory: Array<{ role: 'user' | 'model'; parts: any[] }> = [];
+  private currentChat: any = null;
 
   constructor(config: AppConfig) {
     this.config = config;
@@ -151,7 +154,9 @@ export class TodoistAIChat {
     console.log('   - "What tasks do I have today?"');
     console.log('   - "Create a task to buy groceries tomorrow"');
     console.log('   - "Show me my overdue tasks"');
-    console.log('   - Type "exit" to quit\n');
+    console.log('   - Type "exit" to quit');
+    console.log('   - Type "history" to see conversation history');
+    console.log('   - Type "clear" to clear conversation history\n');
 
     this.rl.prompt();
 
@@ -165,6 +170,21 @@ export class TodoistAIChat {
       }
 
       if (userInput === '') {
+        this.rl?.prompt();
+        return;
+      }
+
+      // Handle utility commands
+      if (userInput.toLowerCase() === 'history') {
+        console.log('\n📚 Conversation History:');
+        console.log(this.getConversationContext());
+        console.log(); // Empty line for readability
+        this.rl?.prompt();
+        return;
+      }
+
+      if (userInput.toLowerCase() === 'clear') {
+        this.clearConversationHistory();
         this.rl?.prompt();
         return;
       }
@@ -220,19 +240,33 @@ export class TodoistAIChat {
       // Create system instruction
       const systemInstruction = this.createSystemPrompt();
 
-      // Start a chat session with the model
-      const chat = modelWithTools.startChat({
-        systemInstruction: {
-          role: 'system',
-          parts: [{ text: systemInstruction }],
-        },
+      // Initialize chat session only once if it doesn't exist
+      if (!this.currentChat) {
+        this.currentChat = modelWithTools.startChat({
+          systemInstruction: {
+            role: 'system',
+            parts: [{ text: systemInstruction }],
+          },
+        });
+      }
+
+      // Add user message to conversation history
+      this.conversationHistory.push({
+        role: 'user',
+        parts: [{ text: userInput }],
       });
 
       // Send the user's message
-      const result = await chat.sendMessage(userInput);
+      const result = await this.currentChat.sendMessage(userInput);
+
+      // Add AI response to conversation history
+      this.conversationHistory.push({
+        role: 'model',
+        parts: [{ text: result.response.text() }],
+      });
 
       // Handle the response, which may include function calls
-      await this.handleModelResponse(result, chat);
+      await this.handleModelResponse(result, this.currentChat);
     } catch (error) {
       console.error('❌ Error communicating with Gemini:', error);
     }
@@ -389,11 +423,39 @@ Be conversational and friendly while being efficient and accurate with task mana
         },
       ]);
 
+      // Update conversation history with the final AI response
+      this.conversationHistory.push({
+        role: 'model',
+        parts: [{ text: followUpResult.response.text() }],
+      });
+
       console.log('🤖 AI:', followUpResult.response.text());
     } else {
       // No function calls, just display the text response
       console.log('🤖 AI:', response.text());
     }
+  }
+
+  // Add method to get conversation context
+  getConversationContext(): string {
+    if (this.conversationHistory.length === 0) {
+      return 'No conversation history yet.';
+    }
+
+    return this.conversationHistory
+      .map((msg, index) => {
+        const role = msg.role === 'user' ? 'You' : 'AI';
+        const content = msg.parts[0]?.text || 'No content';
+        return `${index + 1}. ${role}: ${content}`;
+      })
+      .join('\n\n');
+  }
+
+  // Add method to clear conversation history
+  clearConversationHistory(): void {
+    this.conversationHistory = [];
+    this.currentChat = null;
+    console.log('🗑️  Conversation history cleared!');
   }
 
   async cleanup(): Promise<void> {
