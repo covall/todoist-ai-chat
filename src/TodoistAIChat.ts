@@ -156,7 +156,8 @@ export class TodoistAIChat {
     console.log('   - "Show me my overdue tasks"');
     console.log('   - Type "exit" to quit');
     console.log('   - Type "history" to see conversation history');
-    console.log('   - Type "clear" to clear conversation history\n');
+    console.log('   - Type "clear" to clear conversation history');
+    console.log('   - Type "test" to test task finding functionality\n');
 
     this.rl.prompt();
 
@@ -185,6 +186,12 @@ export class TodoistAIChat {
 
       if (userInput.toLowerCase() === 'clear') {
         this.clearConversationHistory();
+        this.rl?.prompt();
+        return;
+      }
+
+      if (userInput.toLowerCase() === 'test') {
+        await this.testTaskFinding();
         this.rl?.prompt();
         return;
       }
@@ -259,11 +266,18 @@ export class TodoistAIChat {
       // Send the user's message
       const result = await this.currentChat.sendMessage(userInput);
 
-      // Add AI response to conversation history
-      this.conversationHistory.push({
-        role: 'model',
-        parts: [{ text: result.response.text() }],
-      });
+      // Debug: Check if we got a valid response
+      const responseText = result.response.text();
+      if (responseText && responseText.trim()) {
+        // Add AI response to conversation history
+        this.conversationHistory.push({
+          role: 'model',
+          parts: [{ text: responseText }],
+        });
+      } else {
+        console.log('⚠️  Warning: Empty initial response from AI');
+        console.log('🔍 Debug: Initial response object:', JSON.stringify(result.response, null, 2));
+      }
 
       // Handle the response, which may include function calls
       await this.handleModelResponse(result, this.currentChat);
@@ -358,19 +372,49 @@ export class TodoistAIChat {
       .map((tool) => `- ${tool.name}: ${tool.description}`)
       .join('\n');
 
-    return `You are an AI assistant connected to a user's Todoist account via MCP (Model Context Protocol).
-You can help the user manage their tasks by reading their existing tasks and creating new ones.
+    // Get current date information
+    const today = new Date();
+    const todayStr = today.toISOString().split('T')[0];
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const tomorrowStr = tomorrow.toISOString().split('T')[0];
+    const nextWeek = new Date(today);
+    nextWeek.setDate(nextWeek.getDate() + 7);
+    const nextWeekStr = nextWeek.toISOString().split('T')[0];
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayStr = yesterday.toISOString().split('T')[0];
 
-Available tools:
+    return `You are an AI assistant connected to a user's Todoist account via MCP (Model Context Protocol).
+
+AVAILABLE TOOLS:
 ${toolDescriptions}
 
-When the user asks about their tasks or wants to create/modify tasks, you should use the appropriate MCP tools to fulfill their request.
-Always be helpful and proactive in suggesting actions based on their requests.
+CRITICAL RULES - YOU MUST FOLLOW THESE EXACTLY:
+1. NEVER use a tool called "date" - it does not exist
+2. For date-related queries, ALWAYS use "find-tasks-by-date" tool
+3. The "find-tasks-by-date" tool accepts startDate as:
+   - "today" (literal string)
+   - "overdue" (literal string)
+   - YYYY-MM-DD format (e.g., "${todayStr}")
+4. When user asks about "tomorrow", calculate tomorrow's date and use YYYY-MM-DD format
+5. When user asks about "next week", calculate date 7 days from now and use YYYY-MM-DD format
 
-If you need to use a tool, please indicate which tool you want to use and with what parameters.
-Format your tool requests clearly so they can be executed.
+IMPORTANT: You MUST know the current date to calculate relative dates correctly.
+- Current date: ${todayStr}
+- Tomorrow: ${tomorrowStr}
+- Next week: ${nextWeekStr}
+- Yesterday: ${yesterdayStr}
 
-Be conversational and friendly while being efficient and accurate with task management.`;
+EXAMPLES OF CORRECT TOOL USAGE:
+- "What tasks do I have today?" → Use find-tasks-by-date with startDate: "today"
+- "What tasks do I have tomorrow?" → Use find-tasks-by-date with startDate: "${tomorrowStr}"
+- "Show me overdue tasks" → Use find-tasks-by-date with startDate: "overdue"
+- "Tasks for next week" → Use find-tasks-by-date with startDate: "${nextWeekStr}"
+
+When users ask about the current date or relative dates, provide the actual calculated dates in your responses.
+
+Be helpful and conversational while managing tasks efficiently.`;
   }
 
   private async handleModelResponse(result: any, chat: any): Promise<void> {
@@ -424,15 +468,25 @@ Be conversational and friendly while being efficient and accurate with task mana
       ]);
 
       // Update conversation history with the final AI response
-      this.conversationHistory.push({
-        role: 'model',
-        parts: [{ text: followUpResult.response.text() }],
-      });
-
-      console.log('🤖 AI:', followUpResult.response.text());
+      const followUpText = followUpResult.response.text();
+      if (followUpText && followUpText.trim()) {
+        this.conversationHistory.push({
+          role: 'model',
+          parts: [{ text: followUpText }],
+        });
+        console.log('🤖 AI:', followUpText);
+      } else {
+        console.log('🤖 AI: [Empty response received]');
+      }
     } else {
       // No function calls, just display the text response
-      console.log('🤖 AI:', response.text());
+      const responseText = response.text();
+      if (responseText && responseText.trim()) {
+        console.log('🤖 AI:', responseText);
+      } else {
+        console.log('🤖 AI: [Empty response received]');
+        console.log('🔍 Debug: Response object:', JSON.stringify(response, null, 2));
+      }
     }
   }
 
@@ -475,6 +529,83 @@ Be conversational and friendly while being efficient and accurate with task mana
       }
     } catch (error) {
       console.error('❌ Error closing readline interface:', error);
+    }
+  }
+
+  // Test method to debug task finding
+  async testTaskFinding(): Promise<void> {
+    console.log('🧪 Testing task finding with different date formats...');
+
+    try {
+      // Test 1: Find tasks for today using "today"
+      console.log('\n📅 Test 1: Finding tasks for "today"');
+      const todayResult = await this.callToolWithRetry('find-tasks-by-date', {
+        startDate: 'today',
+        limit: 10,
+      });
+      console.log('✅ Today result:', JSON.stringify(todayResult, null, 2));
+
+      // Test 2: Find tasks for today using YYYY-MM-DD format
+      const todayDate = new Date().toISOString().split('T')[0];
+      console.log(`\n📅 Test 2: Finding tasks for "${todayDate}"`);
+      const todayDateResult = await this.callToolWithRetry('find-tasks-by-date', {
+        startDate: todayDate,
+        limit: 10,
+      });
+      console.log('✅ Today date result:', JSON.stringify(todayDateResult, null, 2));
+
+      // Test 3: Find tasks for tomorrow using YYYY-MM-DD format
+      const tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      const tomorrowDate = tomorrow.toISOString().split('T')[0];
+      console.log(`\n📅 Test 3: Finding tasks for "${tomorrowDate}"`);
+      const tomorrowResult = await this.callToolWithRetry('find-tasks-by-date', {
+        startDate: tomorrowDate,
+        limit: 10,
+      });
+      console.log('✅ Tomorrow result:', JSON.stringify(tomorrowResult, null, 2));
+
+      // Test 4: Try using find-tasks with search text
+      console.log('\n🔍 Test 4: Using find-tasks with search');
+      const searchResult = await this.callToolWithRetry('find-tasks', {
+        searchText: 'due:today',
+        limit: 10,
+      });
+      console.log('✅ Search result:', JSON.stringify(searchResult, null, 2));
+
+      // Test 5: Check for overdue tasks
+      console.log('\n⏰ Test 5: Checking for overdue tasks');
+      const overdueResult = await this.callToolWithRetry('find-tasks-by-date', {
+        startDate: 'overdue',
+        limit: 10,
+      });
+      console.log('✅ Overdue result:', JSON.stringify(overdueResult, null, 2));
+
+      // Test 6: Try with expanded date range (7 days)
+      console.log(`\n📅 Test 6: Finding tasks for "${todayDate}" with 7-day range`);
+      const weekResult = await this.callToolWithRetry('find-tasks-by-date', {
+        startDate: todayDate,
+        daysCount: 7,
+        limit: 10,
+      });
+      console.log('✅ Week result:', JSON.stringify(weekResult, null, 2));
+
+      // Test 7: Try to find any tasks at all (no filters)
+      console.log('\n🔍 Test 7: Finding any tasks (no filters)');
+      const anyTasksResult = await this.callToolWithRetry('find-tasks', {
+        limit: 10,
+      });
+      console.log('✅ Any tasks result:', JSON.stringify(anyTasksResult, null, 2));
+
+      // Test 8: Try with broader search
+      console.log('\n🔍 Test 8: Broader search for tasks');
+      const broaderResult = await this.callToolWithRetry('find-tasks', {
+        searchText: 'task',
+        limit: 10,
+      });
+      console.log('✅ Broader search result:', JSON.stringify(broaderResult, null, 2));
+    } catch (error) {
+      console.error('❌ Error during testing:', error);
     }
   }
 }
