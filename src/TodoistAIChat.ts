@@ -18,6 +18,7 @@ export class TodoistAIChat {
   private rl: readline.Interface | null = null;
   private availableTools: MCPTool[] = [];
   private config: AppConfig;
+  private isProcessingRequest = false;
 
   constructor(config: AppConfig) {
     this.config = config;
@@ -25,31 +26,31 @@ export class TodoistAIChat {
 
   async initialize(): Promise<void> {
     console.log('🔧 Initializing components...');
-    
+
     // Initialize Gemini AI
     await this.initializeGemini();
-    
+
     // Initialize MCP connection to Todoist
     await this.initializeMCP();
-    
+
     // Setup console interface
     this.setupConsoleInterface();
-    
+
     console.log('✅ Initialization complete!\n');
   }
 
   private async initializeGemini(): Promise<void> {
     this.geminiAI = new GoogleGenerativeAI(this.config.geminiApiKey);
-    this.model = this.geminiAI.getGenerativeModel({ 
-      model: 'gemini-1.5-flash',
+    this.model = this.geminiAI.getGenerativeModel({
+      model: 'gemini-2.5-flash',
       generationConfig: {
         temperature: 0.7,
         topP: 0.8,
         topK: 40,
         maxOutputTokens: 2048,
-      }
+      },
     });
-    
+
     console.log('✅ Gemini AI initialized');
   }
 
@@ -60,38 +61,36 @@ export class TodoistAIChat {
   private async ensureMCPConnection(): Promise<void> {
     try {
       console.log('🔗 Connecting to Todoist MCP server with personal access token...');
-      
+
       // Create fresh transport and client
-      this.mcpTransport = new StreamableHTTPClientTransport(
-        new URL('https://ai.todoist.net/mcp'),
-        {
-          requestInit: {
-            headers: {
-              'Authorization': `Bearer ${this.config.todoistApiToken}`,
-              'Content-Type': 'application/json'
-            }
-          }
-        }
-      );
+      this.mcpTransport = new StreamableHTTPClientTransport(new URL('https://ai.todoist.net/mcp'), {
+        requestInit: {
+          headers: {
+            Authorization: `Bearer ${this.config.todoistApiToken}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      });
 
       this.mcpClient = new Client({
         name: 'todoist-ai-chat',
-        version: '1.0.0'
+        version: '1.0.0',
       });
 
       await this.mcpClient.connect(this.mcpTransport);
-      
+
       // Get available tools from the MCP server
       const toolsResult = await this.mcpClient.listTools();
-      this.availableTools = toolsResult.tools.map(tool => ({
+      this.availableTools = toolsResult.tools.map((tool) => ({
         name: tool.name,
         description: tool.description || '',
-        inputSchema: tool.inputSchema
+        inputSchema: tool.inputSchema,
       }));
 
-      console.log(`✅ Connected to Todoist MCP server with ${this.availableTools.length} tools available`);
-      console.log(`📋 Available tools: ${this.availableTools.map(t => t.name).join(', ')}`);
-      
+      console.log(
+        `✅ Connected to Todoist MCP server with ${this.availableTools.length} tools available`
+      );
+      console.log(`📋 Available tools: ${this.availableTools.map((t) => t.name).join(', ')}`);
     } catch (error) {
       console.error('❌ Failed to connect to Todoist MCP server:', error);
       console.log('💡 Make sure you have internet access and the Todoist MCP server is available.');
@@ -101,23 +100,23 @@ export class TodoistAIChat {
 
   private async reconnectMCP(): Promise<void> {
     console.log('🔄 Reconnecting to Todoist MCP server...');
-    
+
     // Clean up existing connection
     if (this.mcpClient) {
       try {
         await this.mcpClient.close();
       } catch (e) {
-        // Ignore cleanup errors
+        console.warn('⚠️  Warning: Failed to close MCP client during reconnection:', e);
       }
     }
     if (this.mcpTransport) {
       try {
         await this.mcpTransport.close();
       } catch (e) {
-        // Ignore cleanup errors  
+        console.warn('⚠️  Warning: Failed to close MCP transport during reconnection:', e);
       }
     }
-    
+
     // Re-establish connection
     await this.ensureMCPConnection();
   }
@@ -126,7 +125,7 @@ export class TodoistAIChat {
     this.rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout,
-      prompt: '💬 You: '
+      prompt: '💬 You: ',
     });
   }
 
@@ -135,7 +134,19 @@ export class TodoistAIChat {
       throw new Error('Application not properly initialized');
     }
 
-    console.log('🎯 Chat started! You can now ask questions about your Todoist tasks or request new tasks.');
+    // Additional validation to ensure objects are in valid state
+    if (!this.geminiAI || !this.mcpTransport) {
+      throw new Error('Core components not properly initialized');
+    }
+
+    // Validate that we have tools available
+    if (this.availableTools.length === 0) {
+      throw new Error('No MCP tools available - connection may be invalid');
+    }
+
+    console.log(
+      '🎯 Chat started! You can now ask questions about your Todoist tasks or request new tasks.'
+    );
     console.log('📝 Examples:');
     console.log('   - "What tasks do I have today?"');
     console.log('   - "Create a task to buy groceries tomorrow"');
@@ -146,7 +157,7 @@ export class TodoistAIChat {
 
     this.rl.on('line', async (input: string) => {
       const userInput = input.trim();
-      
+
       if (userInput.toLowerCase() === 'exit' || userInput.toLowerCase() === 'quit') {
         console.log('👋 Goodbye!');
         this.rl?.close();
@@ -158,12 +169,22 @@ export class TodoistAIChat {
         return;
       }
 
+      // Prevent concurrent requests
+      if (this.isProcessingRequest) {
+        console.log('⏳ Please wait, processing previous request...');
+        this.rl?.prompt();
+        return;
+      }
+
       try {
+        this.isProcessingRequest = true;
         await this.processUserInput(userInput);
       } catch (error) {
         console.error('❌ Error processing your request:', error);
+      } finally {
+        this.isProcessingRequest = false;
       }
-      
+
       this.rl?.prompt();
     });
 
@@ -178,41 +199,40 @@ export class TodoistAIChat {
 
     try {
       // Convert MCP tools to Gemini function declarations
-      const functionDeclarations = this.availableTools.map(tool => ({
+      const functionDeclarations = this.availableTools.map((tool) => ({
         name: tool.name,
         description: tool.description,
-        parameters: this.cleanSchemaForGemini(tool.inputSchema)
+        parameters: this.cleanSchemaForGemini(tool.inputSchema),
       }));
 
       // Create a model with function calling enabled
       const modelWithTools = this.geminiAI!.getGenerativeModel({
-        model: 'gemini-1.5-flash',
+        model: 'gemini-2.5-flash',
         tools: [{ functionDeclarations }],
         generationConfig: {
           temperature: 0.7,
           topP: 0.8,
           topK: 40,
           maxOutputTokens: 2048,
-        }
+        },
       });
 
       // Create system instruction
       const systemInstruction = this.createSystemPrompt();
-      
+
       // Start a chat session with the model
       const chat = modelWithTools.startChat({
         systemInstruction: {
           role: 'system',
-          parts: [{ text: systemInstruction }]
-        }
+          parts: [{ text: systemInstruction }],
+        },
       });
 
       // Send the user's message
       const result = await chat.sendMessage(userInput);
-      
+
       // Handle the response, which may include function calls
       await this.handleModelResponse(result, chat);
-
     } catch (error) {
       console.error('❌ Error communicating with Gemini:', error);
     }
@@ -247,27 +267,37 @@ export class TodoistAIChat {
     return cleaned;
   }
 
-  private async callToolWithRetry(toolName: string, args: any, maxRetries: number = 2): Promise<any> {
+  private async callToolWithRetry(
+    toolName: string,
+    args: any,
+    maxRetries: number = 2
+  ): Promise<any> {
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         if (!this.mcpClient) {
           throw new Error('MCP client not initialized');
         }
-        
+
         const result = await this.mcpClient.callTool({
           name: toolName,
-          arguments: args
+          arguments: args,
         });
-        
+
         return result;
-      } catch (error: any) {
-        const isConnectionError = error.message?.includes('No transport found for sessionId') || 
-                                 error.message?.includes('HTTP 404') ||
-                                 error.message?.includes('connection');
-        
+      } catch (error: unknown) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        const isConnectionError =
+          errorMessage.includes('No transport found for sessionId') ||
+          errorMessage.includes('HTTP 404') ||
+          errorMessage.includes('connection');
+
         if (isConnectionError && attempt < maxRetries) {
-          console.log(`⚠️  Connection lost, attempting to reconnect (attempt ${attempt + 1}/${maxRetries + 1})...`);
-          
+          console.log(
+            `⚠️  Connection lost, attempting to reconnect (attempt ${attempt + 1}/${
+              maxRetries + 1
+            })...`
+          );
+
           try {
             await this.reconnectMCP();
             console.log('✅ Reconnection successful, retrying tool call...');
@@ -275,7 +305,9 @@ export class TodoistAIChat {
           } catch (reconnectError) {
             console.error('❌ Failed to reconnect:', reconnectError);
             if (attempt === maxRetries) {
-              throw new Error(`Failed to execute ${toolName} after ${maxRetries + 1} attempts: ${error.message}`);
+              throw new Error(
+                `Failed to execute ${toolName} after ${maxRetries + 1} attempts: ${errorMessage}`
+              );
             }
           }
         } else {
@@ -283,25 +315,25 @@ export class TodoistAIChat {
         }
       }
     }
-    
+
     throw new Error(`Failed to execute ${toolName} after ${maxRetries + 1} attempts`);
   }
 
   private createSystemPrompt(): string {
-    const toolDescriptions = this.availableTools.map(tool => 
-      `- ${tool.name}: ${tool.description}`
-    ).join('\n');
+    const toolDescriptions = this.availableTools
+      .map((tool) => `- ${tool.name}: ${tool.description}`)
+      .join('\n');
 
-    return `You are an AI assistant connected to a user's Todoist account via MCP (Model Context Protocol). 
+    return `You are an AI assistant connected to a user's Todoist account via MCP (Model Context Protocol).
 You can help the user manage their tasks by reading their existing tasks and creating new ones.
 
 Available tools:
 ${toolDescriptions}
 
-When the user asks about their tasks or wants to create/modify tasks, you should use the appropriate MCP tools to fulfill their request. 
+When the user asks about their tasks or wants to create/modify tasks, you should use the appropriate MCP tools to fulfill their request.
 Always be helpful and proactive in suggesting actions based on their requests.
 
-If you need to use a tool, please indicate which tool you want to use and with what parameters. 
+If you need to use a tool, please indicate which tool you want to use and with what parameters.
 Format your tool requests clearly so they can be executed.
 
 Be conversational and friendly while being efficient and accurate with task management.`;
@@ -309,49 +341,54 @@ Be conversational and friendly while being efficient and accurate with task mana
 
   private async handleModelResponse(result: any, chat: any): Promise<void> {
     const response = result.response;
-    
+
     // Check if the model wants to call functions
     const functionCalls = response.functionCalls();
-    
+
     if (functionCalls && functionCalls.length > 0) {
       console.log('🔧 AI is using tools to help with your request...');
-      
+
       // Execute each function call
       const functionResponses = [];
-      
+
       for (const functionCall of functionCalls) {
         try {
           console.log(`🛠️  Executing: ${functionCall.name}`);
-          
+
           // Execute the MCP tool with retry logic
-          const toolResult = await this.callToolWithRetry(functionCall.name, functionCall.args || {});
-          
+          const toolResult = await this.callToolWithRetry(
+            functionCall.name,
+            functionCall.args || {}
+          );
+
           functionResponses.push({
             name: functionCall.name,
             response: {
-              content: toolResult.content
-            }
+              content: toolResult.content,
+            },
           });
-          
         } catch (error) {
-          console.error(`❌ Error executing tool ${functionCall.name}:`, error);
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          console.error(`❌ Error executing tool ${functionCall.name}:`, errorMessage);
           functionResponses.push({
             name: functionCall.name,
             response: {
-              content: `Error: ${error}`
-            }
+              content: `Error: ${errorMessage}`,
+            },
           });
         }
       }
-      
+
       // Send function results back to the model for a final response
-      const followUpResult = await chat.sendMessage([{
-        functionResponse: {
-          name: functionResponses[0].name,
-          response: functionResponses[0].response
-        }
-      }]);
-      
+      const followUpResult = await chat.sendMessage([
+        {
+          functionResponse: {
+            name: functionResponses[0].name,
+            response: functionResponses[0].response,
+          },
+        },
+      ]);
+
       console.log('🤖 AI:', followUpResult.response.text());
     } else {
       // No function calls, just display the text response
@@ -360,11 +397,22 @@ Be conversational and friendly while being efficient and accurate with task mana
   }
 
   async cleanup(): Promise<void> {
-    if (this.mcpClient) {
-      await this.mcpClient.close();
+    try {
+      if (this.mcpClient) {
+        await this.mcpClient.close();
+        console.log('✅ MCP client closed successfully');
+      }
+    } catch (error) {
+      console.error('❌ Error closing MCP client:', error);
     }
-    if (this.rl) {
-      this.rl.close();
+
+    try {
+      if (this.rl) {
+        this.rl.close();
+        console.log('✅ Readline interface closed successfully');
+      }
+    } catch (error) {
+      console.error('❌ Error closing readline interface:', error);
     }
   }
 }

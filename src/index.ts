@@ -7,18 +7,18 @@ async function main() {
   try {
     // Validate environment variables
     const config = validateEnvironment();
-    
+
     // Display welcome message
     displayWelcome();
-    
+
     // Initialize and start the chat application
     const chat = new TodoistAIChat(config);
+    chatInstance = chat; // Store reference for graceful shutdown
     await chat.initialize();
     await chat.startChat();
-    
   } catch (error) {
     console.error('❌ Failed to start the application:', error);
-    
+
     if (error instanceof Error) {
       if (error.message.includes('GEMINI_API_KEY')) {
         console.log('\n📚 Need help getting started?');
@@ -30,19 +30,27 @@ async function main() {
         console.log('3. Try running: npx -y mcp-remote https://ai.todoist.net/mcp');
       }
     }
-    
+
     process.exit(1);
   }
 }
 
 // Handle graceful shutdown
-process.on('SIGINT', () => {
+let chatInstance: TodoistAIChat | null = null;
+
+process.on('SIGINT', async () => {
   console.log('\n\n👋 Shutting down gracefully...');
+  if (chatInstance) {
+    await chatInstance.cleanup();
+  }
   process.exit(0);
 });
 
-process.on('SIGTERM', () => {
+process.on('SIGTERM', async () => {
   console.log('\n\n👋 Shutting down gracefully...');
+  if (chatInstance) {
+    await chatInstance.cleanup();
+  }
   process.exit(0);
 });
 
