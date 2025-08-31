@@ -1,3 +1,5 @@
+import 'dotenv/config';
+
 export interface AppConfig {
   geminiApiKey: string;
   todoistApiToken: string;
@@ -6,7 +8,7 @@ export interface AppConfig {
 export function validateEnvironment(): AppConfig {
   const geminiApiKey = process.env.GEMINI_API_KEY;
   const todoistApiToken = process.env.TODOIST_API_TOKEN;
-  
+
   if (!geminiApiKey) {
     console.error('❌ Missing required environment variable: GEMINI_API_KEY');
     console.log('💡 To get your Gemini API key:');
@@ -22,13 +24,15 @@ export function validateEnvironment(): AppConfig {
     console.log('   1. Visit https://todoist.com/prefs/integrations');
     console.log('   2. Scroll down to "API token" section');
     console.log('   3. Copy your API token');
-    console.log('   4. Set it as an environment variable: export TODOIST_API_TOKEN="your-token-here"');
+    console.log(
+      '   4. Set it as an environment variable: export TODOIST_API_TOKEN="your-token-here"'
+    );
     process.exit(1);
   }
 
   return {
     geminiApiKey,
-    todoistApiToken
+    todoistApiToken,
   };
 }
 
